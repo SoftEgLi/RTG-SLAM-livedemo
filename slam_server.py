@@ -1,34 +1,32 @@
 """
-RTG-SLAM with RealSense D455 Real-time Streaming
+RTG-SLAM Server - Receives RGB-D images via network and performs real-time SLAM
 
 Usage:
-    python slam_realsense.py --config configs/realsense/d455.yaml
+    python slam_server.py --config configs/network/server.yaml --port 9999
 """
 
 import os
 import signal
 import sys
+import time
+import json
 from argparse import ArgumentParser
 
 from utils.config_utils import read_config
 
-parser = ArgumentParser(description="RTG-SLAM with RealSense streaming")
+parser = ArgumentParser(description="RTG-SLAM Network Server")
 parser.add_argument("--config", type=str, default="configs/realsense/d455.yaml")
-parser.add_argument("--width", type=int, default=640, help="Camera resolution width")
-parser.add_argument("--height", type=int, default=480, help="Camera resolution height")
-parser.add_argument("--fps", type=int, default=30, help="Camera frame rate")
+parser.add_argument("--host", type=str, default="0.0.0.0", help="Server host address")
+parser.add_argument("--port", type=int, default=9999, help="Server port")
 parser.add_argument("--max_frames", type=int, default=-1, help="Max frames to process (-1 for unlimited)")
 parser.add_argument("--visualize", action="store_true", help="Enable visualization window")
 parser.add_argument("--save_data", action="store_true", help="Save RGB, depth images and poses")
-parser.add_argument("--save_data_dir", type=str, default=None, help="Directory to save data (default: save_path/recorded_data)")
+parser.add_argument("--save_data_dir", type=str, default="network_slam/my_experiment", help="Directory to save data (default: save_path/recorded_data)")
 args = parser.parse_args()
 config_path = args.config
 args_config = read_config(config_path)
 
 # Merge command line args
-args_config.realsense_width = args.width
-args_config.realsense_height = args.height
-args_config.realsense_fps = args.fps
 args_config.max_frames = args.max_frames
 args_config.visualize = args.visualize
 args_config.save_data = args.save_data
@@ -39,10 +37,9 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(device) for device in args_con
 import cv2
 import numpy as np
 import torch
-import json
 from utils.camera_utils import loadCam
 from arguments import DatasetParams, MapParams, OptimizationParams
-from scene.realsense_stream import RealsenseStream, RealsenseConfig
+from scene.network_stream import NetworkStreamServer
 from SLAM.multiprocess.mapper import Mapping
 from SLAM.multiprocess.tracker import Tracker
 from SLAM.utils import *
@@ -67,18 +64,14 @@ def depth_to_colormap(depth, min_depth=0.0, max_depth=5.0):
     if isinstance(depth, torch.Tensor):
         depth = depth.detach().cpu().numpy()
 
-    # Handle different shapes
     if depth.ndim == 3:
-        if depth.shape[0] == 1:  # (1, H, W)
+        if depth.shape[0] == 1:
             depth = depth[0]
-        elif depth.shape[2] == 1:  # (H, W, 1)
+        elif depth.shape[2] == 1:
             depth = depth[:, :, 0]
 
-    # Normalize depth to 0-255
     depth = np.clip(depth, min_depth, max_depth)
     depth_normalized = ((depth - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
-
-    # Apply colormap
     depth_colormap = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
     return depth_colormap
 
@@ -155,33 +148,73 @@ class DataRecorder:
         print(f"[DataRecorder] Saved camera intrinsics to: {intrinsics_file}")
 
 
+def save_cameras_json(keyframe_list, save_path):
+    """Save camera intrinsics and poses to cameras.json"""
+    if not keyframe_list:
+        print("[Warning] No keyframes to save in cameras.json")
+        return
+
+    cameras = []
+    for idx, frame in enumerate(keyframe_list):
+        # Get pose (camera-to-world)
+        c2w = frame.get_c2w.detach().cpu().numpy()
+
+        # Skip invalid poses
+        if np.isinf(c2w).any() or np.isnan(c2w).any():
+            print(f"[Warning] Skipping invalid pose at frame {idx}")
+            continue
+
+        R = c2w[:3, :3]
+        T = c2w[:3, 3]
+
+        # Get intrinsics
+        intrinsic = frame.get_intrinsic.cpu().numpy()
+        fx = float(intrinsic[0, 0])
+        fy = float(intrinsic[1, 1])
+
+        cameras.append({
+            "id": idx,
+            "img_name": f"frame_{idx:06d}",
+            "width": frame.image_width,
+            "height": frame.image_height,
+            "position": T.tolist(),
+            "rotation": [row.tolist() for row in R],
+            "fx": fx,
+            "fy": fy,
+        })
+
+    cameras_path = os.path.join(save_path, "cameras.json")
+    with open(cameras_path, "w") as f:
+        json.dump(cameras, f, indent=2)
+    print(f"[LOG] Saved cameras.json with {len(cameras)} cameras to {cameras_path}")
+
+
 def create_visualization(curr_frame, gaussian_map, min_depth=0.0, max_depth=5.0):
     """Create a 2x2 visualization grid showing camera and rendered images."""
     # Get camera captured RGB image (shape: 3, H, W)
     camera_rgb = curr_frame.original_image.detach().cpu().numpy()
-    camera_rgb = np.transpose(camera_rgb, (1, 2, 0))  # (H, W, 3)
+    camera_rgb = np.transpose(camera_rgb, (1, 2, 0))
     camera_rgb = (camera_rgb * 255).astype(np.uint8)
     camera_rgb = cv2.cvtColor(camera_rgb, cv2.COLOR_RGB2BGR)
 
-    # Get camera captured depth image (shape: 1, H, W)
+    # Get camera captured depth
     camera_depth = curr_frame.original_depth.detach().cpu().numpy()
     camera_depth_colormap = depth_to_colormap(camera_depth, min_depth, max_depth)
 
-    # Get rendered RGB image (shape: H, W, 3)
+    # Get rendered RGB
     render_rgb = gaussian_map.model_map["render_color"]
     if isinstance(render_rgb, torch.Tensor):
         render_rgb = render_rgb.detach().cpu().numpy()
     render_rgb = (np.clip(render_rgb, 0, 1) * 255).astype(np.uint8)
     render_rgb = cv2.cvtColor(render_rgb, cv2.COLOR_RGB2BGR)
 
-    # Get rendered depth image (shape: H, W, 1)
+    # Get rendered depth
     render_depth = gaussian_map.model_map["render_depth"]
     render_depth_colormap = depth_to_colormap(render_depth, min_depth, max_depth)
 
-    # Get image dimensions
     h, w = camera_rgb.shape[:2]
 
-    # Add labels to images
+    # Add labels
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.6
     font_color = (255, 255, 255)
@@ -195,12 +228,11 @@ def create_visualization(curr_frame, gaussian_map, min_depth=0.0, max_depth=5.0)
         cv2.putText(img_copy, label, (10, 10 + text_height), font, font_scale, font_color, font_thickness)
         return img_copy
 
-    camera_rgb_labeled = add_label(camera_rgb, "Camera RGB")
-    camera_depth_labeled = add_label(camera_depth_colormap, "Camera Depth")
+    camera_rgb_labeled = add_label(camera_rgb, "Input RGB")
+    camera_depth_labeled = add_label(camera_depth_colormap, "Input Depth")
     render_rgb_labeled = add_label(render_rgb, "Rendered RGB")
     render_depth_labeled = add_label(render_depth_colormap, "Rendered Depth")
 
-    # Create 2x2 grid
     top_row = np.hstack([camera_rgb_labeled, camera_depth_labeled])
     bottom_row = np.hstack([render_rgb_labeled, render_depth_labeled])
     grid = np.vstack([top_row, bottom_row])
@@ -210,11 +242,12 @@ def create_visualization(curr_frame, gaussian_map, min_depth=0.0, max_depth=5.0)
 
 def main():
     global shutdown_requested
-    is_debugged = True
-    if is_debugged:
-        import torch.multiprocessing as mp
-        mp.set_start_method('spawn', force=True)  # 或使用 'fork'
-    # Register signal handlers for graceful shutdown
+
+    # Set multiprocessing start method
+    import torch.multiprocessing as mp
+    mp.set_start_method('spawn', force=True)
+
+    # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -227,23 +260,6 @@ def main():
     optimization_params = optimization_params.extract(args_config)
     dataset_params = dataset_params.extract(args_config)
     map_params = map_params.extract(args_config)
-
-    # Configure RealSense
-    realsense_config = RealsenseConfig(
-        width=args_config.realsense_width,
-        height=args_config.realsense_height,
-        fps=args_config.realsense_fps,
-        depth_scale=1000.0,
-        align_depth=True,
-        enable_auto_exposure=args_config.realsense_auto_exposure if hasattr(args_config, 'realsense_auto_exposure') else True,
-        enable_auto_white_balance=args_config.realsense_auto_white_balance if hasattr(args_config, 'realsense_auto_white_balance') else True,
-        color_temperature=args_config.realsense_color_temperature if hasattr(args_config, 'realsense_color_temperature') else None,
-        exposure=args_config.realsense_exposure if hasattr(args_config, 'realsense_exposure') else None,
-        brightness=args_config.realsense_brightness if hasattr(args_config, 'realsense_brightness') else 0,
-        contrast=args_config.realsense_contrast if hasattr(args_config, 'realsense_contrast') else 50,
-        saturation=args_config.realsense_saturation if hasattr(args_config, 'realsense_saturation') else 64,
-        hue=args_config.realsense_hue if hasattr(args_config, 'realsense_hue') else 0,
-    )
 
     record_mem = args_config.record_mem
 
@@ -266,11 +282,12 @@ def main():
     mapper_time_sum = 0
     frame_id = 0
 
-    # Start RealSense streaming
-    print("\n========== Starting RealSense D455 Streaming ==========\n")
-    print("Press Ctrl+C to stop...")
+    # Start network server
+    print("\n========== Starting RTG-SLAM Network Server ==========\n")
+    print(f"Host: {args.host}, Port: {args.port}")
+    print("Waiting for client connection...")
 
-    with RealsenseStream(config=realsense_config) as stream:
+    with NetworkStreamServer(host=args.host, port=args.port) as stream:
         for frame_info in stream:
             if shutdown_requested:
                 print("[INFO] Shutdown requested, stopping...")
@@ -323,6 +340,30 @@ def main():
             print(f"[LOG] mapper cost time: {mapper_time - tracker_time:.4f}s")
             print(f"[LOG] total frame time: {mapper_time - start_time:.4f}s ({1.0/(mapper_time - start_time):.1f} FPS)")
 
+            # Get rendered results to send back to client
+            render_rgb = gaussian_map.model_map["render_color"]
+            if isinstance(render_rgb, torch.Tensor):
+                render_rgb = render_rgb.detach().cpu().numpy()
+            render_rgb = (np.clip(render_rgb, 0, 1) * 255).astype(np.uint8)
+
+            render_depth = gaussian_map.model_map["render_depth"]
+            if isinstance(render_depth, torch.Tensor):
+                render_depth = render_depth.detach().cpu().numpy()
+            if render_depth.ndim == 3:
+                if render_depth.shape[2] == 1:
+                    render_depth = render_depth[:, :, 0]
+
+            camera_pose = curr_frame.get_c2w.detach().cpu().numpy()
+
+            # Send rendered result back to client
+            stream.send_render_result(
+                frame_id=frame_id,
+                timestamp=frame_info.timestamp,
+                rendered_rgb=render_rgb,
+                rendered_depth=render_depth,
+                camera_pose=camera_pose,
+            )
+
             # Save data (RGB, depth, pose)
             if data_recorder is not None:
                 if frame_id == 0:
@@ -336,9 +377,9 @@ def main():
                     min_depth=gaussian_map.min_depth,
                     max_depth=gaussian_map.max_depth
                 )
-                cv2.imshow("RTG-SLAM Visualization", vis_grid)
+                cv2.imshow("RTG-SLAM Server", vis_grid)
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:  # 'q' or ESC to quit
+                if key == ord('q') or key == 27:
                     print("[INFO] Quit requested via visualization window...")
                     shutdown_requested = True
 
@@ -396,15 +437,17 @@ def main():
     time_recorder.save(args_config.save_path)
     gaussian_map.time += 1
 
+    # Save cameras.json
+    save_cameras_json(gaussian_map.keyframe_list, args_config.save_path)
+
     if args_config.pcd_densify:
         densify_pcd = gaussian_map.stable_pointcloud.densify(1, 30, 5)
         o3d.io.write_point_cloud(
             os.path.join(args_config.save_path, "save_model", "pcd_densify.ply"), densify_pcd
         )
 
-    print("\n========== SLAM Finished ==========\n")
+    print("\n========== SLAM Server Finished ==========\n")
 
-    # Close visualization window
     if args_config.visualize:
         cv2.destroyAllWindows()
 

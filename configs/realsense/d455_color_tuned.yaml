@@ -1,0 +1,11 @@
+# RTG-SLAM configuration for RealSense D455 with color tuning for blue tint fix
+parent: "configs/realsense/d455.yaml"
+
+# Color sensor settings optimized to reduce blue tint
+realsense_auto_white_balance: true # Enable automatic white balance
+realsense_color_temperature: 5000 # Set to 5000K (warm white) instead of auto to reduce blue
+realsense_auto_exposure: true # Enable automatic exposure
+realsense_brightness: 5 # Slightly increase brightness
+realsense_contrast: 55 # Slightly increase contrast
+realsense_saturation: 70 # Increase saturation for more vibrant colors
+realsense_hue: -15 # Shift hue towards red to counteract blue tint

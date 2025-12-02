@@ -1,28 +1,13 @@
-# RTG-SLAM configuration for RealSense D455 camera
+# RTG-SLAM configuration for Network streaming (Server mode)
 parent: "configs/base.yaml"
 
-save_path: "output/realsense/d455"
+save_path: "output/network_slam"
 
-# Dataset params - using special type for realsense
-type: "Realsense"
-source_path: "" # Not used for live streaming
+# Dataset params - using network streaming
+type: "Network"
+source_path: "" # Not used for network streaming
 
-# RealSense specific params
-realsense_width: 640
-realsense_height: 480
-realsense_fps: 30
-
-# Color sensor settings (to fix blue tint)
-realsense_auto_white_balance: true # Enable automatic white balance
-realsense_color_temperature: null # Color temperature in Kelvin (null=auto, 3000-6500K)
-realsense_auto_exposure: true # Enable automatic exposure
-realsense_exposure: null # Manual exposure value (null=auto)
-realsense_brightness: 0 # -64 to 64 (increase to brighten)
-realsense_contrast: 50 # 0 to 100 (increase for more contrast)
-realsense_saturation: 64 # 0 to 100 (increase for more vibrant colors)
-realsense_hue: 0 # -180 to 180 (adjust for blue tint: try negative values like -10 to -30)
-
-# Depth range for D455 (0.4m - 6m recommended range)
+# Depth range
 min_depth: 0.4
 max_depth: 2.5
 
@@ -57,7 +42,7 @@ rotation_lr: 0.001
 renderer_opaque_threshold: 0.6
 color_sigma: 3.0
 
-# ICP tracking (no GT pose for live camera)
+# ICP tracking (no GT pose for live streaming)
 use_gt_pose: False
 icp_use_model_depth: True
 icp_downscales: [0.25, 0.5, 1.0]
@@ -70,7 +55,7 @@ icp_sample_normal_threshold: 0.01
 icp_warmup_frames: 200
 icp_fail_threshold: 0.01
 
-# ORB backend (optional, can help with tracking)
+# ORB backend (optional)
 use_orb_backend: True
 tracker_max_fps: 15
 orb_settings_path: "configs/orb_config/ours.yaml"

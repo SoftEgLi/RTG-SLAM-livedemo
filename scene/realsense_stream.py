@@ -26,6 +26,13 @@ class RealsenseConfig(NamedTuple):
     depth_scale: float = 1000.0  # depth in mm -> meters
     align_depth: bool = True
     enable_auto_exposure: bool = True
+    enable_auto_white_balance: bool = True
+    color_temperature: Optional[int] = None  # Color temperature in Kelvin (3000-6500), None for auto
+    exposure: Optional[int] = None  # Manual exposure value, None for auto
+    brightness: int = 0  # -64 to 64
+    contrast: int = 50  # 0 to 100
+    saturation: int = 64  # 0 to 100
+    hue: int = 0  # -180 to 180 (for color shift adjustment)
 
 
 class RealsenseStream:
@@ -90,10 +97,30 @@ class RealsenseStream:
         depth_sensor = self.profile.get_device().first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
 
-        # Set auto exposure if enabled
+        # Configure color sensor (white balance, exposure, etc.)
+        color_sensor = self.profile.get_device().first_color_sensor()
+        
+        # Auto exposure
         if self.config.enable_auto_exposure:
-            color_sensor = self.profile.get_device().first_color_sensor()
             color_sensor.set_option(rs.option.enable_auto_exposure, 1)
+        else:
+            color_sensor.set_option(rs.option.enable_auto_exposure, 0)
+            if self.config.exposure is not None:
+                color_sensor.set_option(rs.option.exposure, self.config.exposure)
+        
+        # Auto white balance
+        if self.config.enable_auto_white_balance:
+            color_sensor.set_option(rs.option.enable_auto_white_balance, 1)
+        else:
+            color_sensor.set_option(rs.option.enable_auto_white_balance, 0)
+            if self.config.color_temperature is not None:
+                color_sensor.set_option(rs.option.color_temperature, self.config.color_temperature)
+        
+        # Adjust color properties
+        color_sensor.set_option(rs.option.brightness, self.config.brightness)
+        color_sensor.set_option(rs.option.contrast, self.config.contrast)
+        color_sensor.set_option(rs.option.saturation, self.config.saturation)
+        color_sensor.set_option(rs.option.hue, self.config.hue)
 
         # Create align object
         if self.config.align_depth:
@@ -112,6 +139,8 @@ class RealsenseStream:
         print(f"[RealsenseStream] Started with resolution {self.config.width}x{self.config.height} @ {self.config.fps}fps")
         print(f"[RealsenseStream] Intrinsics: fx={self.intrinsics.fx:.2f}, fy={self.intrinsics.fy:.2f}, "
               f"cx={self.intrinsics.ppx:.2f}, cy={self.intrinsics.ppy:.2f}")
+        print(f"[RealsenseStream] Color settings - Brightness: {self.config.brightness}, Contrast: {self.config.contrast}, "
+              f"Saturation: {self.config.saturation}, Hue: {self.config.hue}")
 
         return self
 
@@ -242,38 +271,3 @@ class RealsenseStream:
         self.stop()
         return False
 
-
-class RealsenseDataset:
-    """
-    Dataset wrapper for RealSense streaming.
-    Compatible with RTG-SLAM's Dataset interface.
-    """
-
-    def __init__(self, config: Optional[RealsenseConfig] = None, crop_edge: int = 0):
-        self.stream = RealsenseStream(config=config, crop_edge=crop_edge)
-        self.cameras_extent = 1.0  # Default extent
-        self.mesh_path = None
-
-    def start(self):
-        self.stream.start()
-        return self
-
-    def stop(self):
-        self.stream.stop()
-
-    @property
-    def scene_info(self):
-        """Compatibility property - returns self for iteration"""
-        return self
-
-    @property
-    def train_cameras(self):
-        """Returns the stream iterator"""
-        return self.stream
-
-    def __enter__(self):
-        return self.start()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
-        return False
