@@ -1,0 +1,72 @@
+# RTG-SLAM configuration for RealSense D455 camera
+parent: "configs/base.yaml"
+
+save_path: "output/realsense/d455"
+
+# Dataset params - using special type for realsense
+type: "Realsense"
+source_path: "" # Not used for live streaming
+
+# RealSense specific params
+realsense_width: 640
+realsense_height: 480
+realsense_fps: 30
+
+# Depth range for D455 (0.4m - 6m recommended range)
+min_depth: 0.4
+max_depth: 2.5
+
+# Map params - optimized for real-time
+uniform_sample_num: 46080
+KNN_num: 20
+KNN_threshold: -1
+memory_length: 3
+global_keyframe_num: 3
+
+# Map preprocess
+invalid_confidence_thresh: 0.1
+depth_filter: False
+
+# State manage
+stable_confidence_thres: 250
+unstable_time_window: 400
+keyframe_trans_thes: 0.3
+keyframe_theta_thes: 30
+
+# Optimize params - reduced for real-time performance
+gaussian_update_iter: 50
+gaussian_update_frame: 8
+final_global_iter: 10
+position_lr: 0.001
+feature_lr: 0.001
+opacity_lr: 0.000
+scaling_lr: 0.002
+rotation_lr: 0.001
+
+# Render params
+renderer_opaque_threshold: 0.6
+color_sigma: 3.0
+
+# ICP tracking (no GT pose for live camera)
+use_gt_pose: False
+icp_use_model_depth: True
+icp_downscales: [0.25, 0.5, 1.0]
+icp_damping: 0.0001
+icp_downscale_iters: [5, 5, 5]
+icp_distance_threshold: 0.1
+icp_normal_threshold: 20
+icp_sample_distance_threshold: 0.01
+icp_sample_normal_threshold: 0.01
+icp_warmup_frames: 200
+icp_fail_threshold: 0.01
+
+# ORB backend (optional, can help with tracking)
+use_orb_backend: True
+tracker_max_fps: 15
+orb_settings_path: "configs/orb_config/ours.yaml"
+orb_vocab_path: "thirdParty/ORB-SLAM2-PYBIND/Vocabulary/ORBvoc.txt"
+
+# Save settings
+save_step: 400
+record_mem: False
+pcd_densify: False

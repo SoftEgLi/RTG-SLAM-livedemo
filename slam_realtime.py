@@ -21,7 +21,6 @@ from utils.general_utils import safe_state
 from utils.monitor import Recorder
 
 torch.set_printoptions(4, sci_mode=False)
-is_debugged = True
 
 
 def main():
@@ -35,7 +34,7 @@ def main():
     optimization_params = optimization_params.extract(args)
     dataset_params = dataset_params.extract(args)
     map_params = map_params.extract(args)
-    
+
     # Initialize dataset
     dataset = Dataset(
         dataset_params,
